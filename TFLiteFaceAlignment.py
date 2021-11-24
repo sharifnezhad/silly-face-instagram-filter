@@ -5,9 +5,9 @@ import numpy as np
 import cv2
 import tensorflow as tf
 from functools import partial
-import time
 from TFLiteFaceDetector import UltraLightFaceDetecion
-import sys
+import math
+
 class CoordinateAlignmentModel():
     def __init__(self, filepath, marker_nums=106, input_size=(192, 192)):
         self._marker_nums = marker_nums
@@ -146,6 +146,62 @@ def zoom_effect(frame,landmark):
     frame[int(y-(0.5*h)):int(y+h+(0.5*h)),int(x-(0.5*w)):int(x+w+(0.5*w))]=res*255
     return frame
 
+def get_lip_height(lip):
+    sum=0
+    for i in [0,2,4]:
+        # distance between two near points up and down
+        distance = math.sqrt( (lip[i][0] - lip[i+1][0])**2 +(lip[i][1] - lip[i+1][1])**2   )
+        sum += distance
+    return sum / 3
+
+def get_mouth_height(top_lip, bottom_lip):
+    sum=0
+    for i in [1,3,5]:
+        # distance between two near points up and down
+        distance = math.sqrt( (top_lip[i][0] - bottom_lip[i-1][0])**2 + 
+                              (top_lip[i][1] - bottom_lip[i-1][1])**2   )
+        sum += distance
+    return sum / 3
+
+def check_mouth_open(top_lip, bottom_lip):
+    top_lip_height =    get_lip_height(top_lip)
+    bottom_lip_height = get_lip_height(bottom_lip)
+    mouth_height =      get_mouth_height(top_lip, bottom_lip)
+
+    # if mouth is open more than lip height * ratio, return true.
+    ratio = 0.5
+    if mouth_height > min(top_lip_height, bottom_lip_height) * ratio:
+        return True
+    else:
+        return False
+
+def zoom_effect_lips(frame,landmark,height_lip):
+    x,y,w,h=cv2.boundingRect(landmark)
+    rows,cols,_=frame.shape
+    mask=np.zeros((rows,cols,3),dtype='uint8')
+    cv2.drawContours(mask, [landmark], -1, (255, 255, 255), -1)
+    deff=0
+    if height_lip==2:
+        deff=0.5
+    elif height_lip==3:
+        deff=1
+    elif height_lip==4:
+        deff=1.5
+    frame_2x=cv2.resize(frame, None,fx=height_lip,fy=height_lip)
+    mask_2x=cv2.resize(mask,None,fx=height_lip,fy=height_lip)
+
+    frame_2x=frame_2x/255
+    mask_2x=mask_2x/255
+
+    frame_target=frame[int(y-(h*deff)):int(y+h+(h*deff)),int(x-(w*deff)):int(x+w+(w*deff))]
+    frame_target=frame_target/255
+
+    foreground=cv2.multiply(mask_2x,frame_2x)
+    background=cv2.multiply(frame_target,1-mask_2x[y*height_lip:(y+h)*height_lip,x*height_lip:(x+w)*height_lip])
+    res=cv2.add(background,foreground[y*height_lip:(y+h)*height_lip,x*height_lip:(x+w)*height_lip])
+    frame[int(y-(deff*h)):int(y+h+(deff*h)),int(x-(deff*w)):int(x+w+(deff*w))]=res*255
+    return frame
+
 #eye_left= 35,38,33,37,39,42,40,41
 #eye_right= 89,90,87,91,93,98,94,95
 #lip=  52 55 56 53 59 58 69 68 67 71 63 64
@@ -174,14 +230,32 @@ while True:
         landmarks_lips=[]
         for i in [52, 55, 56, 53, 56, 59, 69, 68, 67, 71, 63, 64]:
             landmarks_lips.append(tuple(pred_int[i]))
+        top_lip=[]
+        for i in [63,66,71,62,67,70]:
+            top_lip.append(tuple(pred_int[i]))
+        
+        bottom_lip=[]
+        for i in [54,56,60,53,57,59]:
+            bottom_lip.append(tuple(pred_int[i]))
         
         landmarks_left_eye = np.array([landmarks_left_eye])
         landmarks_right_eye = np.array([landmarks_right_eye])
         landmarks_lips = np.array([landmarks_lips])
-
+        
         frame=zoom_effect(frame,landmarks_left_eye)
         frame=zoom_effect(frame,landmarks_right_eye)
-        frame=zoom_effect(frame,landmarks_lips)
+        if check_mouth_open(top_lip,bottom_lip)==True:
+            height_lips=get_mouth_height(top_lip,bottom_lip)
+            if height_lips>2 and height_lips<=15:
+                height=2
+                frame=zoom_effect_lips(frame,landmarks_lips,height)
+            elif height_lips>15 and height_lips<=25:
+                height=3
+                frame=zoom_effect_lips(frame,landmarks_lips,height)
+            elif height_lips>26 :
+                height=4
+                frame=zoom_effect_lips(frame,landmarks_lips,height)
+            
 
 
     cv2.imshow("result", frame)
